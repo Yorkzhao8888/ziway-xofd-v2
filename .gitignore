@@ -143,3 +143,8 @@ node-compile-cache/
 .vite/
 .coze-logs
 .codegraph/
+
+# X-OFD 本地数据与产物
+/data
+dist-server
+logs

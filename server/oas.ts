@@ -22,16 +22,32 @@ const OAS_ISS = process.env.OAS_ISS || ''                          // 可选：�
 const OAS_AUD = process.env.OAS_AUD || ''                          // 可选：校验 audience
 const EXPECTED_KID = process.env.OAS_KID || 'oas-rsa-001'
 
+// ---------------- 一键测试登录（发行门槛 NORM-LOGIN）----------------
+// 独立开关，与 OAS_MODE 解耦：
+//  - QUICK_LOGIN=on / off 显式指定（正式域可显式 on 保留能力）
+//  - 未指定时按环境推导：开发/内测默认开，公测/正式默认关
+//  关时端点返回 404（fail-closed，对齐百泰 OS v0.1 三关）；正式域能力保留可开
+export const QUICK_LOGIN: 'on' | 'off' = (() => {
+  const v = String(process.env.QUICK_LOGIN || '').toLowerCase()
+  if (v === 'on') return 'on'
+  if (v === 'off') return 'off'
+  return (process.env.COZE_PROJECT_ENV || 'DEV').toUpperCase() === 'PROD' ? 'off' : 'on'
+})()
+// 测试账号：spec 规定 test123 直进工作台 → 落到默认演示身份
+export const QUICK_LOGIN_TEST_ACCOUNT = String(process.env.QUICK_LOGIN_TEST_ACCOUNT || 'test123')
+
 // ---------------- 启动告警：on 但未配公钥（不裸奔）----------------
 export interface OasHealth {
   mode: 'on' | 'off'
   configured: boolean        // on 模式下是否配了公钥来源
   keySource: 'pem' | 'jwks' | 'none'
   baseUrl: string
+  quickLogin: 'on' | 'off'   // 一键测试登录开关（发行门槛 NORM-LOGIN）
+  testAccount: string
   warning?: string
 }
 export function oasHealth(): OasHealth {
-  if (OAS_MODE === 'off') return { mode: 'off', configured: true, keySource: 'none', baseUrl: OAS_BASE_URL }
+  if (OAS_MODE === 'off') return { mode: 'off', configured: true, keySource: 'none', baseUrl: OAS_BASE_URL, quickLogin: QUICK_LOGIN, testAccount: QUICK_LOGIN_TEST_ACCOUNT }
   const hasPem = !!OAS_PUBLIC_KEY
   const hasJwks = !!(OAS_JWKS_URL || OAS_BASE_URL)
   const keySource: 'pem' | 'jwks' | 'none' = hasPem ? 'pem' : hasJwks ? 'jwks' : 'none'
@@ -39,7 +55,7 @@ export function oasHealth(): OasHealth {
     ? 'OAS_MODE=on 但未配置 OAS_PUBLIC_KEY / OAS_JWKS_URL / OAS_BASE_URL，受保护路由将全部 401（fail-closed）'
     : undefined
   if (warning) console.warn(`[OAS] ${warning}`)
-  return { mode: 'on', configured: keySource !== 'none', keySource, baseUrl: OAS_BASE_URL, warning }
+  return { mode: 'on', configured: keySource !== 'none', keySource, baseUrl: OAS_BASE_URL, quickLogin: QUICK_LOGIN, testAccount: QUICK_LOGIN_TEST_ACCOUNT, warning }
 }
 
 // ---------------- OFD 角色 / DU 帽 ----------------

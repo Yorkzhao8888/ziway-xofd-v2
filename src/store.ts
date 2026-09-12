@@ -35,6 +35,7 @@ interface State {
   init: () => Promise<void>
   login: (huId: string, password: string) => Promise<void>
   quickLogin: (huId: string) => Promise<void>
+  quickLoginTest: () => Promise<void>
   acceptOasToken: (token: string) => Promise<HU>
   logout: () => void
   refresh: () => Promise<void>
@@ -112,6 +113,15 @@ export const useStore = create<State>((set, get) => ({
 
   quickLogin: async (huId) => {
     const { token, hu } = await api.quickLogin(huId)
+    setToken(token)
+    set({ currentHuId: hu.id })
+    await get().refresh()
+    set({ authed: true })
+  },
+
+  // test123 测试账号直进（NORM-LOGIN 发行门槛）
+  quickLoginTest: async () => {
+    const { token, hu } = await api.quickLoginTest()
     setToken(token)
     set({ currentHuId: hu.id })
     await get().refresh()

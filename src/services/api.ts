@@ -43,8 +43,11 @@ export const api = {
   login: (huId: string, password: string) =>
     request<{ token: string; hu: HU }>('/auth/login', { method: 'POST', body: { huId, password }, auth: false }),
 
+  // test123 测试账号直进（NORM-LOGIN），或按 huId 选演示身份
   quickLogin: (huId: string) =>
     request<{ token: string; hu: HU }>('/auth/quick-login', { method: 'POST', body: { huId }, auth: false }),
+  quickLoginTest: () =>
+    request<{ token: string; hu: HU }>('/auth/quick-login', { method: 'POST', body: { account: 'test123' }, auth: false }),
 
   quickLogins: () =>
     request<QuickLoginHu[]>('/auth/quick-logins', { auth: false }),

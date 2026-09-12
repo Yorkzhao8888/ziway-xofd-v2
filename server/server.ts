@@ -7,8 +7,9 @@ import router from './routes/index';
 import { setupVite } from './vite';
 
 const isDev = process.env.COZE_PROJECT_ENV !== 'PROD';
-const port = parseInt(process.env.PORT || '5000', 10);
-const hostname = process.env.HOSTNAME || 'localhost';
+// 端口：优先沙箱注入的 DEPLOY_RUN_PORT（规约硬约束），回退 PORT/5000
+const port = parseInt(process.env.DEPLOY_RUN_PORT || process.env.PORT || '5000', 10);
+const hostname = process.env.HOSTNAME || '0.0.0.0';
 const app = express();
 // 使用 http.createServer 包装 Express app，以便支持 WebSocket 等协议升级
 const server = createServer(app);

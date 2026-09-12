@@ -19,6 +19,7 @@ export default function LoginPage() {
   const nav = useNavigate()
   const [searchParams, setSearchParams] = useSearchParams()
   const quickLogin = useStore((s) => s.quickLogin)
+  const quickLoginTest = useStore((s) => s.quickLoginTest)
   const login = useStore((s) => s.login)
   const acceptOasToken = useStore((s) => s.acceptOasToken)
   const [loading, setLoading] = useState(false)
@@ -110,6 +111,19 @@ export default function LoginPage() {
     }
   }
 
+  const onQuickTest = async () => {
+    setLoading(true)
+    try {
+      await quickLoginTest()
+      message.success('已进入工作台')
+      nav('/')
+    } catch (e: any) {
+      message.error(e?.message || '登录失败')
+    } finally {
+      setLoading(false)
+    }
+  }
+
   return (
     <div style={{ minHeight: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center', background: '#f5f6f8', padding: 16 }}>
       <Card style={{ width: 760, maxWidth: '100%' }} styles={{ body: { padding: 0 } }}>
@@ -184,6 +198,13 @@ export default function LoginPage() {
                   label: '一键测试登录',
                   children: (
                     <div style={{ marginTop: 8 }}>
+                      <Button
+                        type="primary" block icon={<LoginOutlined />}
+                        onClick={onQuickTest} loading={loading}
+                        style={{ marginBottom: 12 }}
+                      >
+                        <b>test123</b> 测试账号直进
+                      </Button>
                       {quickLoading ? (
                         <div style={{ textAlign: 'center', padding: 40 }}><Spin /></div>
                       ) : (

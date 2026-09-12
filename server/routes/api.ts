@@ -8,7 +8,7 @@ import jwt from 'jsonwebtoken'
 import { queries } from '../db'
 import * as svc from '../services'
 import type { HU } from '../db'
-import { OAS_MODE, oasHealth, verifyOasToken, resolveIdentity } from '../oas'
+import { OAS_MODE, QUICK_LOGIN, QUICK_LOGIN_TEST_ACCOUNT, oasHealth, verifyOasToken, resolveIdentity } from '../oas'
 
 export const router = Router()
 
@@ -85,20 +85,27 @@ router.post('/auth/login', wrap((req, res) => {
   ok(res, { token, hu })
 }))
 
-// 一键测试登录：仅 OAS_MODE=off 可用
+// 一键测试登录：发行门槛 NORM-LOGIN
+//  - 独立开关 QUICK_LOGIN：off 时端点 404（fail-closed，对齐百泰 OS v0.1 三关）
+//  - test123 测试账号直进默认演示身份；亦支持按 huId 选择演示身份
 router.post('/auth/quick-login', wrap((req, res) => {
-  if (OAS_MODE === 'on') return fail(res, 410, 'OAS 模式下一码登录已停用')
-  const { huId } = req.body || {}
-  if (!huId) return fail(res, 400, '缺少 huId')
-  const hu = queries.huById(huId)
+  if (QUICK_LOGIN !== 'on') return fail(res, 404, '一键测试登录未开启（NORM-LOGIN）')
+  const { huId, account } = req.body || {}
+  let hu
+  if (account === QUICK_LOGIN_TEST_ACCOUNT || (huId && huId === QUICK_LOGIN_TEST_ACCOUNT)) {
+    // test123 直进：落到默认演示身份（取首个 HU，保证 30 秒进工作台）
+    hu = queries.hus()[0]
+  } else if (huId) {
+    hu = queries.huById(huId)
+  }
   if (!hu) return fail(res, 404, '身份不存在')
   const token = jwt.sign({ huId: hu.id }, JWT_SECRET, { expiresIn: TOKEN_TTL })
   ok(res, { token, hu })
 }))
 
-// 内测一键登录名单：on 模式返回空（前端不展示一码登录）
+// 内测一键登录名单：一键登录关闭时不展示（对齐 NORM-LOGIN）
 router.get('/auth/quick-logins', wrap((_req, res) => {
-  if (OAS_MODE === 'on') return ok(res, [])
+  if (QUICK_LOGIN !== 'on') return ok(res, [])
   const hus = queries.hus().map((h) => ({ id: h.id, name: h.name, duId: h.duId, title: h.title, role: h.role, duName: queries.duById(h.duId)?.name ?? '' }))
   ok(res, hus)
 }))

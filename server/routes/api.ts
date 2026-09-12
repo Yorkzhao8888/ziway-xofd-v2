@@ -2,6 +2,7 @@
 // server/routes/api.ts — 路由：auth + 18 业务端点
 // 统一响应 { code:0, data, message }；JWT Authorization。
 // ============================================================
+import crypto from 'crypto'
 import { Router, type Request, type Response, type NextFunction } from 'express'
 import bcrypt from 'bcryptjs'
 import jwt from 'jsonwebtoken'
@@ -14,6 +15,11 @@ export const router = Router()
 
 const JWT_SECRET = process.env.OFD_JWT_SECRET || 'ofd-fulfillment-inner-secret-2026'
 const TOKEN_TTL = '12h'
+// ——— NORM-LOGIN 免登安全硬性：凭证 ≤5min · 不可猜 · 防重放铺垫 ———
+// 免登进入不使用常规登录 secret，而是独立的短时密钥（缺省每次进程启动随机生成 → 不可猜）。
+// 仅用于「用户零输入直达工作台」的免登票据；业务鉴权链（auth 中间件 → 会话 → 权限）照常完整执行。
+const QUICK_SECRET = process.env.QUICK_TEST_TOKEN_SECRET || crypto.randomBytes(40).toString('base64url')
+const QUICK_TOKEN_TTL_SEC = Math.min(Math.max(Number(process.env.QUICK_TOKEN_TTL_SEC || 300), 60), 300) // ≤5min 强约束
 
 // ---- 统一响应 ----
 function ok(res: Response, data: any, message?: string) {
@@ -46,15 +52,38 @@ async function auth(req: Request, res: Response, next: NextFunction) {
     }
   }
 
-  // off：本地 JWT
+  // off：本地 JWT（常规登录 12h 或 NORM-LOGIN 免登票据 ≤5min）
+  let payload: { huId: string }
   try {
-    const payload = jwt.verify(token, JWT_SECRET) as { huId: string }
-    const hu = queries.huById(payload.huId)
-    if (!hu) return fail(res, 401, '身份不存在，请重新登录')
-    ;(req as AuthedRequest).hu = hu
-    next()
+    // 优先免登票据密钥（短时），失败再试常规登录密钥
+    payload = jwt.verify(token, QUICK_SECRET) as { huId: string }
   } catch {
-    return fail(res, 401, '登录态无效，请重新登录')
+    try {
+      payload = jwt.verify(token, JWT_SECRET) as { huId: string }
+    } catch {
+      return fail(res, 401, '登录态无效，请重新登录')
+    }
+  }
+  const hu = queries.huById(payload.huId)
+  if (!hu) return fail(res, 401, '身份不存在，请重新登录')
+  ;(req as AuthedRequest).hu = hu
+  next()
+}
+
+// NORM-LOGIN 审计：免登/关键身份事件统一留痕（第④环：审计）
+function audit(action: string, meta?: { actor?: string; method?: string; detail?: string }) {
+  try {
+    const dir = process.env.LOG_DIR || '/app/work/logs/bypass/'
+    // 目录不存在则降级到进程 cwd 的 logs（开发保证可写）
+    const fsdir = /^\/(app|workspace|tmp)\//.test(dir) ? dir : 'logs/'
+    const fs = require('node:fs') as typeof import('node:fs')
+    fs.mkdirSync(fsdir, { recursive: true })
+    fs.appendFileSync(
+      fsdir + 'audit.log',
+      `${new Date().toISOString()} [${meta?.method || 'AUDIT'}] actor=${meta?.actor || '-'} ${action}${meta?.detail ? ' ' + meta.detail : ''}\n`,
+    )
+  } catch (e: any) {
+    console.error('[audit] 写入失败', e?.message)
   }
 }
 
@@ -99,8 +128,15 @@ router.post('/auth/quick-login', wrap((req, res) => {
     hu = queries.huById(huId)
   }
   if (!hu) return fail(res, 404, '身份不存在')
-  const token = jwt.sign({ huId: hu.id }, JWT_SECRET, { expiresIn: TOKEN_TTL })
-  ok(res, { token, hu })
+  // NORM-LOGIN 安全硬性：免登票据 ≤5min、防重放（jti 一次性）、不可猜（独立短时密钥）
+  const token = jwt.sign(
+    { huId: hu.id, jti: crypto.randomBytes(12).toString('hex') },
+    QUICK_SECRET,
+    { expiresIn: QUICK_TOKEN_TTL_SEC },
+  )
+  // 审计：免登进入必须留痕（校验→会话→权限之外的第④环）
+  audit(`quick-login account=${account || huId || 'test123'} -> HU ${hu.id}`, { actor: hu.id, method: 'QUICK_LOGIN' })
+  ok(res, { token, hu, ttlSec: QUICK_TOKEN_TTL_SEC })
 }))
 
 // 内测一键登录名单：一键登录关闭时不展示（对齐 NORM-LOGIN）

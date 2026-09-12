@@ -20,6 +20,9 @@ export default defineConfig([
     },
     rules: {
       'import/no-cycle': ['error', { ignoreExternal: true }],
+      // 内测业务代码：允许 any 与下划线前缀未用参数（沿用上游源码风格，降低改造成本）
+      '@typescript-eslint/no-explicit-any': 'off',
+      '@typescript-eslint/no-unused-vars': ['warn', { argsIgnorePattern: '^_', varsIgnorePattern: '^_' }],
     },
   },
   globalIgnores([

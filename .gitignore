@@ -144,7 +144,12 @@ node-compile-cache/
 .coze-logs
 .codegraph/
 
-# X-OFD 本地数据与产物
-/data
-dist-server
-logs
+# SQLite data & server build
+data/
+*.db
+*.db-wal
+*.db-shm
+dist-server/
+
+# mobile walkthrough screenshots (local archive)
+screenshots/

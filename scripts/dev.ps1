@@ -52,9 +52,9 @@ $startupTimeoutSeconds = 30
 $startupDeadline = (Get-Date).AddSeconds($startupTimeoutSeconds)
 while ((Get-Date) -lt $startupDeadline) {
   if ($process.HasExited) {
+    Write-Error "Dev server exited before listening on port $port."
     Get-Content $errorLogFile -Tail 20 -ErrorAction SilentlyContinue
     Remove-Item $pidFile -Force -ErrorAction SilentlyContinue
-    Write-Error "Dev server exited before listening on port $port." -ErrorAction Continue
     exit 1
   }
 
@@ -67,9 +67,9 @@ while ((Get-Date) -lt $startupDeadline) {
   Start-Sleep -Milliseconds 200
 }
 
+Write-Error "Dev server did not listen on port $port within $startupTimeoutSeconds seconds."
 Stop-ProcessTree $process.Id
 Get-Content $errorLogFile -Tail 20 -ErrorAction SilentlyContinue
 Remove-Item $pidFile -Force -ErrorAction SilentlyContinue
-Write-Error "Dev server did not listen on port $port within $startupTimeoutSeconds seconds." -ErrorAction Continue
 exit 1
 

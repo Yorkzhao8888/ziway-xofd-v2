@@ -6,4 +6,7 @@ COZE_WORKSPACE_PATH="${COZE_WORKSPACE_PATH:-$(pwd)}"
 cd "${COZE_WORKSPACE_PATH}"
 
 echo "Installing dependencies..."
-bash "$COZE_WORKSPACE_PATH/scripts/prepare-node-modules.sh" --prefer-frozen-lockfile --prefer-offline --loglevel debug --reporter=append-only
+pnpm install --prefer-frozen-lockfile --prefer-offline --loglevel debug --reporter=append-only
+if command -v coze-dev > /dev/null 2>&1 && coze-dev check-bins --help > /dev/null 2>&1; then
+  coze-dev check-bins --fix
+fi

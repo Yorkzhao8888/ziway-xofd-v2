@@ -33,15 +33,11 @@ LOG_FILE="${LOG_DIR}/server.log"
 PID_FILE="${LOG_DIR}/server.pid"
 
 # detached 出去的进程没人负责回收，超过这个时长就自己退出，避免端口与内存长期泄露。
-MAX_RUNTIME_SECONDS=3600
-
-timeout_watchdog_enabled() {
-  [[ -z "${COZE_EVAL:-}" && -z "${COZE_PROJECT_TYPE:-}" ]]
-}
+MAX_RUNTIME_SECONDS=1200
 
 # 真正被 detach 的是这层 bash wrapper：它是进程组 leader，组内 watchdog 到点回收整组
 # （wrapper -> pnpm -> tsx -> node）；被包的进程自己先退出时也顺手清空进程组，不留残余。
-RUN_WITH_TIMEOUT="$(declare -f timeout_watchdog_enabled)"'
+RUN_WITH_TIMEOUT='
 timeout_seconds=$1
 shift
 
@@ -49,7 +45,6 @@ shift
 child_pid=$!
 
 # 先忽略 TERM，才能在向整组发 TERM（自己也在组里）之后存活下来补一发 KILL。
-if timeout_watchdog_enabled; then
 ( trap "" TERM
   sleep "${timeout_seconds}"
   echo "[dev] 后台进程运行超过 ${timeout_seconds}s，回收进程组 $$。"
@@ -57,7 +52,6 @@ if timeout_watchdog_enabled; then
   sleep 5
   kill -KILL -- "-$$" 2>/dev/null || true
 ) &
-fi
 
 wait "${child_pid}"
 kill -KILL -- "-$$" 2>/dev/null || true
@@ -136,9 +130,7 @@ if [[ -z "${server_pid}" ]] || ! kill -0 "${server_pid}" 2>/dev/null; then
 fi
 
 echo "Dev server started (PID: ${server_pid})."
-if timeout_watchdog_enabled; then
-  echo "Auto stop after ${MAX_RUNTIME_SECONDS}s."
-fi
+echo "Auto stop after ${MAX_RUNTIME_SECONDS}s."
 echo "Log file: ${LOG_FILE}"
 echo "PID file: ${PID_FILE}"
 

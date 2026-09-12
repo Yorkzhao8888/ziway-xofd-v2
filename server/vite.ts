@@ -5,23 +5,35 @@ import type { Application, Request, Response } from 'express';
 import express from 'express';
 import path from 'path';
 import fs from 'fs';
-import { createServer as createViteServer } from 'vite';
-import viteConfig from '../vite.config';
+import { createServer as createViteServer, type UserConfig } from 'vite';
 
 const isDev = process.env.COZE_PROJECT_ENV !== 'PROD';
 
 /**
  * 集成 Vite 开发服务器（中间件模式）
+ *
+ * 注意：vite.config（含 @vitejs/plugin-react，其下游依赖 @babel/core）仅在 dev 环境需要。
+ * 因此在函数内部动态 import（生产 tsup 打包走 setupStaticServer，不触发本函数，
+ * 不会把 babel 链打进 server bundle，从而规避 esbuild 解析
+ * `@babel/preset-typescript/package.json` 失败的部署报错）。
  */
 export async function setupViteMiddleware(app: Application) {
+  const { default: viteConfig } = await import('../vite.config');
+
   const vite = await createViteServer({
     ...viteConfig,
+    // 内联配置已通过 viteConfig 带入 plugins（含 @vitejs/plugin-react），
+    // 必须禁止 Vite 再次按 root 加载 vite.config.ts：否则 mergeConfig 会把 plugins
+    // 数组拼接成两份，React refresh preamble 被注入两次，导致 .tsx 转换报错
+    // （$RefreshReg$ / inWebWorker 重复声明）。
+    configFile: false,
+    root: process.cwd(),
     server: {
       ...viteConfig.server,
       middlewareMode: true,
     },
     appType: 'spa',
-  });
+  } as UserConfig);
 
   // 使用 Vite middleware
   app.use(vite.middlewares);

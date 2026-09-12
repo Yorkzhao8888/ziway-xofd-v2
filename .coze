@@ -2,8 +2,9 @@
 requires = [ "nodejs-24" ]
 project_type = "web"
 template = "vite"
-version = "0.1.8"
+version = "0.1.5"
 appliedPatches = [ ]
+project_id = "7682699337826336768"
 
 [dev]
 build = [ "bash", "./scripts/prepare.sh" ]

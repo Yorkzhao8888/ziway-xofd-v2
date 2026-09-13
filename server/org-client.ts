@@ -40,11 +40,20 @@ function logOrgMeDiag(tag: string, info: { url?: string; status?: number; snippe
 
 /** 对同一 (tag, token尾16位, status) 只诊断一次，避免高频下刷爆日志 */
 let lastDiagKey = ''
+/** 最近一次出站诊断原文（供调用方内联进 401 message，线上可读响应体直接定位） */
+let lastDiagText = ''
 function diagOnce(tag: string, info: { url?: string; status?: number; snippet?: string; err?: string }, token: string) {
   const key = `${tag}:${token.slice(-16)}:${info.status ?? '-'}`
+  // 诊断原文始终刷新（供 401 内联），app.log 去重防刷
+  lastDiagText = `url=${info.url || '-'} | status=${info.status ?? '-'} | body=${(info.snippet || info.err || '').slice(0, 120)}`
   if (key === lastDiagKey) return
   lastDiagKey = key
   logOrgMeDiag(tag, info)
+}
+
+/** 取最近一次 /org/me 出站失败诊断（无则空串） */
+export function getLastOrgMeDiag(): string {
+  return lastDiagText
 }
 
 export interface OrgMeIdentity {

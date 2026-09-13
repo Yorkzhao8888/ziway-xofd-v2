@@ -10,7 +10,7 @@ import jwt from 'jsonwebtoken'
 import crypto from 'crypto'
 import { queries } from './db'
 import type { HU } from './db'
-import { resolveOrgMe, duForHduCode } from './org-client'
+import { resolveOrgMe, duForHduCode, getLastOrgMeDiag } from './org-client'
 
 // ---------------- 配置 ----------------
 export const OAS_MODE: 'on' | 'off' =
@@ -237,7 +237,10 @@ export async function resolveOrgIdentityAsync(
   if (!duId) {
     // 无法定位 DU：有缓存则降级用缓存（仅内测 allowDegrade），否则 fail-closed
     if (cached) return { hu: cached, source: opts.allowDegrade ? 'cache-degraded' : 'cache' }
-    throw new Error('无法从 /org/me 定位归属 DU（fail-closed）')
+    // 诊断直接内联进 401 message（线上读不到日志，可读响应体即可定位出站问题）
+    const diag = getLastOrgMeDiag()
+    const orgSnippet = orgMe ? `hdu.code=${orgMe.code || '-'} hat=${orgMe.hat || '-'}` : 'org-me=null'
+    throw new Error(`无法从 /org/me 定位归属 DU | ${orgSnippet}${diag ? ' | ' + diag : ''}`)
   }
 
   const name = String(orgMe?.name || claims.name || identityId).slice(0, 40)

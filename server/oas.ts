@@ -10,6 +10,7 @@ import jwt from 'jsonwebtoken'
 import crypto from 'crypto'
 import { queries } from './db'
 import type { HU } from './db'
+import { resolveOrgMe } from './org-client'
 
 // ---------------- 配置 ----------------
 export const OAS_MODE: 'on' | 'off' =
@@ -64,6 +65,19 @@ type OfdRole = typeof OFD_ROLES[number]
 const DU_HATS = ['H', 'C', 'E', 'D', 'T', 'Y'] as const
 type DuHat = typeof DU_HATS[number]
 
+type Maybe<T> = T | null | undefined
+
+// OFD 默认角色映射（按 DU 帽）。duId 归属于当前主体的组织身份（/org/me），
+// 这里仅保留「帽→默认角色」的最小语义，组织信息不承载于 JWT（G3）。
+const RESOLVE_HAT_TO_ROLE: Record<DuHat, OfdRole> = {
+  H: 'duAdmin',   // 人力/经营户 → 部门管理员
+  C: 'requester', // 客户 → 发单方
+  E: 'assignee',  // 供给 → 接单
+  D: 'assignee',  // 履约 → 接单
+  T: 'operator',  // 技术 → 执行
+  Y: 'operator',  // 智场 → 执行
+}
+
 // OAS role（12U 小写）→ OFD 角色/默认 DU 帽。未列出的角色 fail-closed。
 // 注：具体 12U 角色码以 OAS 契约为准，这里提供 OFD 内常见映射 + 透传；
 //     ms_access 中的 DU 帽优先级高于默认帽。
@@ -88,16 +102,17 @@ const ROLE_MAP: Record<string, { role: OfdRole; hat?: DuHat }> = {
   guest: { role: 'observer' },
 }
 
+// 标准 OAS claims：仅定位"人"（identity_id/sub/name），不承载组织属性。
+// 组织身份（hat/role/duId/orgId）一律经 GET /org/me 解析，JWT 不追加组织 claims（OFD-LINK-03 G3）。
 export interface OasClaims {
-  identity_id?: string
-  role?: string
-  sub_role?: string
-  ms_access?: unknown         // 帽/权限数组
+  identity_id?: string        // 标准人标识（与 sub 二选一定人）
+  sub?: string
   name?: string
-  du_id?: string              // 可选：明确 DU
   exp?: number
   iat?: number
-  [k: string]: unknown
+  iss?: string
+  aud?: string | string[]
+  [k: string]: unknown        // 其余 claims 仅透传，不参与组织身份推导
 }
 
 // ---------------- JWKS：kid -> RSA PEM ----------------
@@ -182,49 +197,60 @@ function duIdForHat(hat: DuHat): string | undefined {
 
 export interface ResolvedOasIdentity {
   hu: HU
-  source: 'cache' | 'provisioned' | 'cache-degraded'
+  source: 'cache' | 'provisioned' | 'org-me' | 'cache-degraded'
 }
 
-/** 由 claims 推导并落本地 HU（缓存层）。未知角色抛错（fail-closed）。 */
-export function resolveIdentity(claims: OasClaims, opts: { allowDegrade?: boolean } = {}): ResolvedOasIdentity {
+/**
+ * G3：由标准 claims 定人（仅 identity_id/name），组织身份（hat/role/duId）权威来自 /org/me（G2）。
+ * 删除 ms_access/du_id/role/sub_role 自定义 claims 读取（G3），组织语义统一走底座。
+ */
+export async function resolveOrgIdentityAsync(
+  token: string,
+  claims: OasClaims,
+  opts: { allowDegrade?: boolean } = {},
+): Promise<ResolvedOasIdentity> {
   const identityId = String(claims.identity_id || '').trim()
   if (!identityId) throw new Error('OAS token 缺少 identity_id')
 
-  // 1) 命中缓存（OAS 已验签，缓存仅用于取本地资料/降级）
+  // 1) 命中缓存（仅作本地资料底，非组织权威）
   const cached = queries.huByOasIdentity(identityId)
 
-  // 2) 解析角色（未知角色 fail-closed）
-  const rawRole = String(claims.role || '').toLowerCase().trim()
-  const mapped = ROLE_MAP[rawRole]
-  if (!mapped) throw new Error(`未知 OAS 角色：${claims.role}（fail-closed）`)
-  const ofdRole: OfdRole = mapped.role
+  // 2) 组织身份唯一权威 = /org/me（底座，禁加 claims）
+  const orgMe = await resolveOrgMe(token)
 
-  // 3) 解析 DU 帽：ms_access 优先 → claims.du_id → 角色默认帽
+  // 3) 组织语义映射（hat/role/duId 均来自 org-me；本地 DU 表用于 id↔type 语义对齐，写底座不可行故本地只读）
+  const ofdRole: OfdRole =
+    (RESOLVE_HAT_TO_ROLE[orgMe?.hat ?? DU_HATS[0]] as Maybe<OfdRole>) ?? 'operator'
   let duId: string | undefined
-  const hat = pickHatFromMsAccess(claims.ms_access)
-  if (hat) duId = duIdForHat(hat)
-  if (!duId && claims.du_id) {
-    duId = queries.duById(String(claims.du_id))?.id ?? duIdForHat(String(claims.du_id).toUpperCase() as DuHat)
-  }
-  if (!duId && mapped.hat) duId = duIdForHat(mapped.hat)
+  if (orgMe?.duId) duId = queries.duById(orgMe.duId)?.id
+  if (!duId && orgMe?.hat) duId = duIdForHat(orgMe.hat as DuHat)
   if (!duId) {
-    // 无法定位 DU：有缓存则降级用缓存，否则拒绝
+    // 无法定位 DU：有缓存则降级用缓存（仅内测 allowDegrade），否则 fail-closed
     if (cached) return { hu: cached, source: opts.allowDegrade ? 'cache-degraded' : 'cache' }
-    throw new Error('无法从 claims 定位归属 DU（fail-closed）')
+    throw new Error('无法从 /org/me 定位归属 DU（fail-closed）')
   }
 
-  const name = String(claims.name || claims.sub_role || identityId).slice(0, 40)
-  const title = String(claims.sub_role || '').slice(0, 40)
-  // 本地 HU id：稳定映射 OAS-<identityId>
+  const name = String(orgMe?.name || claims.name || identityId).slice(0, 40)
+  const title = String((orgMe as { title?: string } | null)?.title || '').slice(0, 40)
   const huId = `OAS-${identityId}`.slice(0, 48)
 
   if (cached) {
-    // 更新缓存（角色/DU 以 OAS 最新为准）
     queries.upsertOasHu({ id: cached.id, name, duId, title, role: ofdRole, oasIdentityId: identityId })
     const fresh = queries.huById(cached.id)!
-    return { hu: fresh, source: 'cache' }
+    return { hu: fresh, source: orgMe ? 'org-me' : 'cache' }
   }
   queries.upsertOasHu({ id: huId, name, duId, title, role: ofdRole, oasIdentityId: identityId })
-  const hu = queries.huById(huId)!
-  return { hu, source: 'provisioned' }
+  return { hu: queries.huById(huId)!, source: orgMe ? 'org-me' : 'provisioned' }
+}
+
+/** 兼容旧同步签名：走 /org/me 不异步（仅内测/降级路径用纯缓存，不作为组织权威）。 */
+export function resolveIdentity(claims: OasClaims, opts: { allowDegrade?: boolean } = {}): ResolvedOasIdentity {
+  const identityId = String(claims.identity_id || '').trim()
+  if (!identityId) throw new Error('OAS token 缺少 identity_id')
+  const cached = queries.huByOasIdentity(identityId)
+  if (cached) return { hu: cached, source: opts.allowDegrade ? 'cache-degraded' : 'cache' }
+  const name = String(claims.name || identityId).slice(0, 40)
+  const huId = `OAS-${identityId}`.slice(0, 48)
+  queries.upsertOasHu({ id: huId, name, title: '', role: 'operator', oasIdentityId: identityId })
+  return { hu: queries.huById(huId)!, source: 'provisioned' }
 }

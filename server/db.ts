@@ -132,6 +132,89 @@ function ensureColumn(table: string, column: string, ddl: string) {
 ensureColumn('hus', 'oas_identity_id', 'TEXT')
 db.exec('CREATE INDEX IF NOT EXISTS idx_hus_oas_identity ON hus(oas_identity_id)')
 
+// ---------------- 事件出站（outbox）：为二期结算/跨窗投递预留 at-least-once 通道 ----------------
+// demean：本表仅承载「已发生业务事件」的持久待投递记录，不参与业务状态机。
+db.exec(`
+CREATE TABLE IF NOT EXISTS outbox_events (
+  event_id TEXT PRIMARY KEY,          -- 幂等键：全局唯一（含请求 Idempotency-Key 派生链）
+  type TEXT NOT NULL,                 -- order.created / ofd.handled / job.accepted / receipt.issued ...
+  subject_hu_id TEXT NOT NULL,        -- 主体（凭证归属 HU）
+  aggregate_type TEXT,                -- order|ofd|job
+  aggregate_id TEXT,                  -- 对应单号 O-.../F-.../J-...
+  payload TEXT,                       -- JSON 事件载荷（含三号凭证链快照）
+  status TEXT NOT NULL DEFAULT 'pending',  -- pending|delivered|failed
+  attempts INTEGER NOT NULL DEFAULT 0,
+  created_at TEXT NOT NULL,
+  delivered_at TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_outbox_subject ON outbox_events(subject_hu_id, status);
+CREATE INDEX IF NOT EXISTS idx_outbox_agg ON outbox_events(aggregate_type, aggregate_id);
+`)
+
+/** outbox 幂等入队：event_id 已存在则忽略（at-least-once 语义），否则落 pending。 */
+export function enqueueOutbox(e: {
+  eventId: string; type: string; subjectHuId: string
+  aggregateType?: string; aggregateId?: string; payload: unknown
+}): { enqueued: boolean } {
+  const exists = db.prepare('SELECT 1 FROM outbox_events WHERE event_id=?').get(e.eventId)
+  if (exists) return { enqueued: false }
+  db.prepare(`INSERT INTO outbox_events (event_id,type,subject_hu_id,aggregate_type,aggregate_id,payload,status,created_at)
+    VALUES (@eventId,@type,@subjectHuId,@aggregateType,@aggregateId,@payload,'pending',@createdAt)`).run({
+    eventId: e.eventId, type: e.type, subjectHuId: e.subjectHuId,
+    aggregateType: e.aggregateType ?? null, aggregateId: e.aggregateId ?? null,
+    payload: JSON.stringify(e.payload), createdAt: new Date().toISOString(),
+  })
+  return { enqueued: true }
+}
+
+/** 出站投递扫描（供后台/定时触发，at-least-once：标记 delivered 但允许重发同一 event_id 由下游幂等去重）。 */
+export function selectPendingOutbox(limit = 50): Array<{
+  eventId: string; type: string; subjectHuId: string; payload: string; createdAt: string
+}> {
+  return db.prepare(`SELECT event_id AS eventId,type,subject_hu_id AS subjectHuId,payload,created_at AS createdAt
+    FROM outbox_events WHERE status='pending' ORDER BY created_at LIMIT ?`).all(limit) as any[]
+}
+export function markOutbox(status: 'delivered' | 'failed', eventId: string) {
+  const at = new Date().toISOString()
+  db.prepare(`UPDATE outbox_events SET status=?, attempts=attempts+1, delivered_at=? WHERE event_id=?`).run(status, status === 'delivered' ? at : null, eventId)
+}
+
+// ---------------- 凭证链台账查询（按主体查名下 O/F/J 三号+状态，供二期结算取数）----------------
+export interface CredentialVoucher {
+  subjectHuId: string
+  orderId: string | null; orderStatus: string | null; orderAt: string | null
+  ofdId: string | null; ofdStatus: string | null; ofdAt: string | null
+  jobId: string | null; jobStatus: string | null; jobAt: string | null
+  chainClosed: boolean
+}
+/**
+ * 凭证查询：以 order 为主链起点，左连 ofd/job 展开三号凭证链。
+ * orderId 缺失时可按 F→J 反查（直发工单链），故支持按 ofdId/jobId 反推。
+ */
+export function credentialLedgerOf(subjectHuId: string): CredentialVoucher[] {
+  const rows = db.prepare(`
+    SELECT o.id AS oid,o.status AS ost,o.createdAt AS oat,
+           f.id AS fid,f.status AS fst,f.createdAt AS fat,
+           j.id AS jid,j.status AS jst,j.createdAt AS jat
+    FROM orders o
+    LEFT JOIN ofds f ON f.orderId=o.id
+    LEFT JOIN jobs j ON j.ofdId=f.id OR j.orderId=o.id
+    WHERE o.requesterHuId=? OR o.targetHuId=? OR j.assigneeHuId=?
+    ORDER BY o.createdAt DESC
+  `).all(subjectHuId, subjectHuId, subjectHuId) as Array<{
+    oid: string | null; ost: string | null; oat: string | null
+    fid: string | null; fst: string | null; fat: string | null
+    jid: string | null; jst: string | null; jat: string | null
+  }>
+  return rows.map((r) => ({
+    subjectHuId,
+    orderId: r.oid, orderStatus: r.ost, orderAt: r.oat,
+    ofdId: r.fid, ofdStatus: r.fst, ofdAt: r.fat,
+    jobId: r.jid, jobStatus: r.jst, jobAt: r.jat,
+    chainClosed: !!(r.ost === 'closed' && r.fid && r.fst === 'closed' && r.jid && r.jst === 'closed'),
+  }))
+}
+
 // ---------------- 行映射（JSON 列解析）----------------
 function parse<T>(s: string | null | undefined, fallback: T): T {
   if (s == null) return fallback
@@ -196,10 +279,10 @@ export const queries = {
   huByOasIdentity: (identityId: string): HU | undefined =>
     (db.prepare('SELECT id,name,duId,title,role,oas_identity_id AS oasIdentityId FROM hus WHERE oas_identity_id=?').get(identityId) as HU | undefined),
   // OAS 缓存层：按 OAS identity 落本地 HU（首次见自动建缓存行，便于 OAS 短时不可达时降级）
-  upsertOasHu: (h: { id: string; name: string; duId: string; title: string; role: string; oasIdentityId: string }) => {
+  upsertOasHu: (h: { id: string; name: string; duId?: string; title: string; role: string; oasIdentityId: string }) => {
     db.prepare(`INSERT INTO hus (id,name,duId,title,role,passHash,oas_identity_id)
-      VALUES (@id,@name,@duId,@title,@role,'',@oasIdentityId)
-      ON CONFLICT(id) DO UPDATE SET name=@name,duId=@duId,title=@title,role=@role,oas_identity_id=@oasIdentityId`).run(h)
+      VALUES (@id,@name,COALESCE(@duId,''),@title,@role,'',@oasIdentityId)
+      ON CONFLICT(id) DO UPDATE SET name=@name,duId=COALESCE(@duId,''),title=@title,role=@role,oas_identity_id=@oasIdentityId`).run(h)
   },
   huLogin: (id: string): (HU & { passHash: string }) | undefined =>
     db.prepare('SELECT * FROM hus WHERE id=?').get(id) as any,
@@ -227,6 +310,11 @@ export const queries = {
 
   msgsFor: (huId: string): Msg[] =>
     (db.prepare('SELECT * FROM msgs WHERE toHuId=? ORDER BY at DESC').all(huId) as any[]).map(msgFromRow),
+  // ===== OFD-LINK-03：outbox + 凭证台账（G5 / 凭证链）=====
+  enqueueOutbox,
+  selectPendingOutbox,
+  markOutbox,
+  credentialLedgerOf: (subjectHuId: string) => credentialLedgerOf(subjectHuId),
 }
 
 // ---------------- 写入助手 ----------------

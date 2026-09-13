@@ -2,6 +2,7 @@
 // server/routes/api.ts — 路由：auth + 18 业务端点
 // 统一响应 { code:0, data, message }；JWT Authorization。
 // ============================================================
+import fs from 'node:fs'
 import crypto from 'crypto'
 import { Router, type Request, type Response, type NextFunction } from 'express'
 import bcrypt from 'bcryptjs'
@@ -9,7 +10,7 @@ import jwt from 'jsonwebtoken'
 import { queries } from '../db'
 import * as svc from '../services'
 import type { HU } from '../db'
-import { OAS_MODE, QUICK_LOGIN, QUICK_LOGIN_TEST_ACCOUNT, oasHealth, verifyOasToken, resolveIdentity } from '../oas'
+import { OAS_MODE, QUICK_LOGIN, QUICK_LOGIN_TEST_ACCOUNT, oasHealth, verifyOasToken, resolveOrgIdentityAsync } from '../oas'
 
 export const router = Router()
 
@@ -44,7 +45,7 @@ async function auth(req: Request, res: Response, next: NextFunction) {
       const health = oasHealth()
       if (!health.configured) return fail(res, 401, 'OAS 身份服务未配置，访问已拒绝（fail-closed）')
       const { claims } = await verifyOasToken(token)
-      const { hu } = resolveIdentity(claims)
+      const { hu } = await resolveOrgIdentityAsync(token, claims)
       ;(req as AuthedRequest).hu = hu
       return next()
     } catch (e: any) {
@@ -76,7 +77,6 @@ function audit(action: string, meta?: { actor?: string; method?: string; detail?
     const dir = process.env.LOG_DIR || '/app/work/logs/bypass/'
     // 目录不存在则降级到进程 cwd 的 logs（开发保证可写）
     const fsdir = /^\/(app|workspace|tmp)\//.test(dir) ? dir : 'logs/'
-    const fs = require('node:fs') as typeof import('node:fs')
     fs.mkdirSync(fsdir, { recursive: true })
     fs.appendFileSync(
       fsdir + 'audit.log',
@@ -279,4 +279,21 @@ router.post('/jobs/:id/terminate', auth, wrap((req, res) => ok(res, svc.terminat
 router.post('/jobs/:id/transfer', auth, wrap((req, res) => {
   const b = req.body || {}
   ok(res, svc.transferJob(req.hu!, String(req.params.id), b.toHuId, b.reason || ''))
+}))
+
+
+// ===== OFD-LINK-03：凭证链查询 + outbox 投递通道（G5 / 凭证台账）=====
+router.post('/vouchers', auth, wrap((req, res) => {
+  const subjectHuId = String(((req.body || {}).subjectHuId) || req.hu!.id)
+  ok(res, queries.credentialLedgerOf(subjectHuId))
+}))
+
+router.get('/outbox/pending', auth, wrap((req, res) => {
+  ok(res, queries.selectPendingOutbox(50))
+}))
+
+router.post('/outbox/ack', auth, wrap((req, res) => {
+  const b = req.body || {}
+  queries.markOutbox(b.status === 'failed' ? 'failed' : 'delivered', String(b.eventId))
+  ok(res, { acked: true })
 }))

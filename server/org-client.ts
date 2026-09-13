@@ -63,16 +63,21 @@ export async function resolveOrgMe(token: string): Promise<OrgMeIdentity | null>
       const body = await res.json().catch(() => null)
       if (!body || body.code !== 0 || !body.data) return null
       const d = body.data
-      if (!d.orgId && !d.code) return null
+      // 兼容底座两种返回：顶层 orgId/code（D/X 域）与嵌套 hdu.code（个人/经营，62域）
+      const hdu = d.hdu || {}
+      const rawCode = String(d.code || hdu.code || '').trim()
+      if (!d.orgId && !rawCode && !d.userId) return null
+      const hat =
+        d.hat || hdu.hat || hatsFromCode(rawCode) || hatsFromHdu(hdu) || duForHduCode(rawCode)?.hat || undefined
       return {
-        orgId: d.orgId,
-        code: d.code,
-        name: d.name || '',
-        hat: d.hat || hatsFromCode(d.code),
-        role: d.role || 'operator',
-        duId: d.duId,
-        userId: d.userId,
-        labels: d.labels,
+        orgId: String(d.orgId || ''),
+        code: rawCode,
+        name: String(d.name || hdu.name || ''),
+        hat,
+        role: String(d.role || hdu.role || 'operator'),
+        duId: d.duId || hdu.duId,
+        userId: String(d.userId || hdu.userId || ''),
+        labels: d.labels || hdu.labels,
       }
     } finally {
       clearTimeout(timer)
@@ -91,5 +96,23 @@ function hatsFromCode(code: string): string {
   if (c.includes('XVPZ')) return 'T'
   if (c.includes('XOPZ')) return 'Y'
   if (c.includes('XGPZ')) return 'C'
-  return 'H'
+  return ''
+}
+
+/** 从 hdu 结构推断六帽：捷才智通=个人默认(人力帽)；eorg-*=企业(供给帽 E)。未知返回空串。 */
+function hatsFromHdu(hdu: Record<string, any>): string {
+  const code = String(hdu.code || '').toLowerCase()
+  if (!code) return ''
+  if (code.includes('jiecai') || code.includes('zhitong')) return 'H'  // 捷才智通/直通 → 个人默认
+  if (code.startsWith('eorg') || code.includes('eorg')) return 'E'      // 企业 → Domain=E
+  return ''
+}
+
+/** 按 hdu.code 定位默认 DU 域（个人默认域 HDU01；企业默认供给域 EDU01）。 */
+export function duForHduCode(code: string): { hat: string; duHint: string } | null {
+  const c = String(code || '').toLowerCase()
+  if (!c) return null
+  if (c.includes('jiecai') || c.includes('zhitong')) return { hat: 'H', duHint: 'HDU01' } // 捷才智通=个人默认
+  if (c.startsWith('eorg') || c.includes('eorg')) return { hat: 'E', duHint: 'EDU01' }   // 企业=供给域
+  return null
 }

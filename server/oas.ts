@@ -10,7 +10,7 @@ import jwt from 'jsonwebtoken'
 import crypto from 'crypto'
 import { queries } from './db'
 import type { HU } from './db'
-import { resolveOrgMe } from './org-client'
+import { resolveOrgMe, duForHduCode } from './org-client'
 
 // ---------------- 配置 ----------------
 export const OAS_MODE: 'on' | 'off' =
@@ -64,8 +64,6 @@ const OFD_ROLES = ['requester', 'assignee', 'duAdmin', 'operator', 'observer', '
 type OfdRole = typeof OFD_ROLES[number]
 const DU_HATS = ['H', 'C', 'E', 'D', 'T', 'Y'] as const
 type DuHat = typeof DU_HATS[number]
-
-type Maybe<T> = T | null | undefined
 
 // OFD 默认角色映射（按 DU 帽）。duId 归属于当前主体的组织身份（/org/me），
 // 这里仅保留「帽→默认角色」的最小语义，组织信息不承载于 JWT（G3）。
@@ -220,9 +218,21 @@ export async function resolveOrgIdentityAsync(
 
   // 3) 组织语义映射（hat/role/duId 均来自 org-me；本地 DU 表用于 id↔type 语义对齐，写底座不可行故本地只读）
   const ofdRole: OfdRole =
-    (RESOLVE_HAT_TO_ROLE[orgMe?.hat ?? DU_HATS[0]] as Maybe<OfdRole>) ?? 'operator'
+    (orgMe?.hat && (DU_HATS as ReadonlyArray<string>).includes(orgMe.hat)
+      ? RESOLVE_HAT_TO_ROLE[orgMe.hat as DuHat]
+      : undefined) ?? 'operator'
   let duId: string | undefined
-  if (orgMe?.duId) duId = queries.duById(orgMe.duId)?.id
+  // 优先：hdu.code 定位归属 DU 域（捷才智通=个人默认 HDU01；eorg-*=企业默认 EDU01）
+  const codeMap = orgMe?.code ? duForHduCode(orgMe.code) : null
+  if (codeMap) {
+    // 兜底创建默认域，保证新用户必有归属 DU（空台账也能成功返回，禁 401）
+    duId = queries.ensureDuForCode(
+      codeMap.duHint,
+      codeMap.hat,
+      codeMap.duHint === 'EDU01' ? '供给经营部（企业默认）' : '人力事业部（个人默认）',
+    ).id
+  }
+  if (!duId && orgMe?.duId) duId = queries.duById(orgMe.duId)?.id ?? orgMe.duId
   if (!duId && orgMe?.hat) duId = duIdForHat(orgMe.hat as DuHat)
   if (!duId) {
     // 无法定位 DU：有缓存则降级用缓存（仅内测 allowDegrade），否则 fail-closed

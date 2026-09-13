@@ -287,6 +287,14 @@ export const queries = {
   huLogin: (id: string): (HU & { passHash: string }) | undefined =>
     db.prepare('SELECT * FROM hus WHERE id=?').get(id) as any,
   duById: (id: string): DU | undefined => db.prepare('SELECT * FROM dus WHERE id=?').get(id) as DU | undefined,
+  // 按 hdu.code 默认域定位/兜底创建 DU（捷才智通=HDU01 人力个人；eorg-*=EDU01 供给）——保证新用户必有归属域
+  ensureDuForCode: (duId: string, type: string, name: string): DU => {
+    const exist = db.prepare('SELECT * FROM dus WHERE id=?').get(duId) as DU | undefined
+    if (exist) return exist
+    db.prepare('INSERT INTO dus (id,type,name,vcaseId) VALUES (?,?,?,NULL)')
+      .run(duId, type, name)
+    return db.prepare('SELECT * FROM dus WHERE id=?').get(duId) as DU
+  },
 
   orderById: (id: string): OrderDoc | undefined => {
     const r = db.prepare('SELECT * FROM orders WHERE id=?').get(id) as OrderRow | undefined

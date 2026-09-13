@@ -99,11 +99,12 @@ export async function resolveOrgMe(token: string): Promise<OrgMeIdentity | null>
       return null
     }
     const body = await res.json().catch(() => null)
-    if (!body || body.code !== 0 || !body.data) {
+    if (!body || typeof body !== 'object') {
       diagOnce('badbody', { url: ORG_ME_URL, status: res.status, snippet: JSON.stringify(body ?? '').slice(0, 200) }, token)
       return null
     }
-    const d = body.data
+    // 兼容底座两种信封：{ code:0, data:{...} } 与直接返回身份对象 data / 平铺
+    const d = body.data && typeof body.data === 'object' ? body.data : body
     // 兼容底座两种返回：顶层 orgId/code（D/X 域）与嵌套 hdu.code（个人/经营，62域）
     const hdu = d.hdu || {}
     const rawCode = String(d.code || hdu.code || '').trim()

@@ -283,6 +283,15 @@ router.post('/jobs/:id/transfer', auth, wrap((req, res) => {
 
 
 // ===== OFD-LINK-03：凭证链查询 + outbox 投递通道（G5 / 凭证台账）=====
+// OFD-VOUCHER-API-01：GET 扁平分页凭证清单（门户聚合位数据源）——主体=会话 JWT 解析的 HDU，
+// 禁止客户端自定 subjectHuId（G3 口径：禁自定义 claims）；无会话 → auth 401 fail-closed。
+router.get('/vouchers', auth, wrap((req, res) => {
+  const page = Math.max(1, parseInt(String(req.query.page || '1'), 10) || 1)
+  const pageSize = Math.min(100, Math.max(1, parseInt(String(req.query.page_size || '20'), 10) || 20))
+  ok(res, queries.credentialLedgers(req.hu!.id, page, pageSize))
+}))
+
+// 旧 POST 端点（按显式 subjectHuId 查三元组）保留兼容，新消费方建议用 GET。
 router.post('/vouchers', auth, wrap((req, res) => {
   const subjectHuId = String(((req.body || {}).subjectHuId) || req.hu!.id)
   ok(res, queries.credentialLedgerOf(subjectHuId))

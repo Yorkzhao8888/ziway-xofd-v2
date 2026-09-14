@@ -215,6 +215,63 @@ export function credentialLedgerOf(subjectHuId: string): CredentialVoucher[] {
   }))
 }
 
+// ---------------- OFD-VOUCHER-API-01：扁平分页凭证清单（门户聚合位数据源）----------------
+export type VoucherDocType = 'O' | 'F' | 'J'
+export interface VoucherItem {
+  docType: VoucherDocType // 单据类型 O/F/J
+  no: string              // 单号 O-YYYYMM-NNNN / F-… / J-…
+  status: string
+  createdAt: string
+  orderId: string | null
+  ofdId: string | null
+  jobId: string | null
+  role: string            // 该主体在单据中的角色：requester/target/assignee/dispatcher
+}
+export interface VoucherPage {
+  total: number
+  page: number
+  page_size: number
+  items: VoucherItem[]
+}
+/** 按 HDU 主体取名下全部 O/F/J 凭证（扁平、去重、时间倒序、支持分页）。 */
+export function credentialLedgers(
+  subjectHuId: string,
+  page = 1,
+  pageSize = 20,
+): VoucherPage {
+  // 主体参与范围：O(requester/target)、F(经其 order)、J(assignee/dispatch 或经其 order)、直发 J
+  const all = db.prepare(`
+    SELECT docType,no,status,createdAt,orderId,ofdId,jobId,role FROM (
+      SELECT 'O' AS docType, o.id AS no, o.status AS status, o.createdAt AS createdAt,
+             o.id AS orderId, NULL AS ofdId, NULL AS jobId,
+             CASE WHEN o.requesterHuId=@hu THEN 'requester' ELSE 'target' END AS role
+      FROM orders o
+      WHERE o.requesterHuId=@hu OR o.targetHuId=@hu
+      UNION
+      SELECT 'F', f.id, f.status, f.createdAt, f.orderId, f.id, NULL, 'assignee'
+      FROM ofds f
+      WHERE f.orderId IN (SELECT id FROM orders WHERE requesterHuId=@hu OR targetHuId=@hu)
+      UNION
+      SELECT 'J', j.id, j.status, j.createdAt, j.orderId, j.ofdId, j.id,
+             CASE WHEN j.assigneeHuId=@hu THEN 'assignee'
+                  WHEN j.dispatchHuId=@hu THEN 'dispatcher' ELSE 'participant' END
+      FROM jobs j
+      WHERE j.assigneeHuId=@hu OR j.dispatchHuId=@hu
+         OR j.orderId IN (SELECT id FROM orders WHERE requesterHuId=@hu OR targetHuId=@hu)
+      UNION
+      SELECT 'J', j.id, j.status, j.createdAt, NULL, j.ofdId, j.id,
+             CASE WHEN j.assigneeHuId=@hu THEN 'assignee' ELSE 'dispatcher' END
+      FROM jobs j
+      WHERE j.isDirect=1 AND (j.assigneeHuId=@hu OR j.dispatchHuId=@hu)
+    ) v
+    ORDER BY createdAt DESC
+  `).all({ hu: subjectHuId }) as VoucherItem[]
+  const total = all.length
+  const start = Math.max(0, (page - 1) * pageSize)
+  const items = all.slice(start, start + pageSize)
+  return { total, page, page_size: pageSize, items }
+}
+
 // ---------------- 行映射（JSON 列解析）----------------
 function parse<T>(s: string | null | undefined, fallback: T): T {
   if (s == null) return fallback
@@ -323,6 +380,8 @@ export const queries = {
   selectPendingOutbox,
   markOutbox,
   credentialLedgerOf: (subjectHuId: string) => credentialLedgerOf(subjectHuId),
+  credentialLedgers: (subjectHuId: string, page?: number, pageSize?: number) =>
+    credentialLedgers(subjectHuId, page, pageSize),
 }
 
 // ---------------- 写入助手 ----------------

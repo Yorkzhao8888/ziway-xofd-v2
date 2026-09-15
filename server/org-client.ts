@@ -132,9 +132,10 @@ export async function resolveOrgMe(token: string): Promise<OrgMeIdentity | null>
   }
 }
 
-/** 根据组织编码推断六帽（兼容底座未显式返回 hat 的情况）：XHPZ#CU→H… 语义见生态口径。 */
+/** 根据组织编码推断六帽（兼容底座未显式返回 hat 的情况）：XHPZ#CU→C(客户/发单)… 语义见生态口径。 */
 function hatsFromCode(code: string): string {
   const c = code || ''
+  if (c.includes('XHPZ#CU') || /XHPZ.*#\s*CU/i.test(c)) return 'C' // 个人客户容器帽 → C（发单归属）
   if (c.includes('XHPZ')) return 'H' // 个人用户 → 人力帽（也可 C 依场景）
   if (c.includes('XEPZ')) return 'E'
   if (c.includes('XDPZ')) return 'D'

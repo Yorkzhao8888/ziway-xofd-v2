@@ -199,16 +199,47 @@ export interface ResolvedOasIdentity {
 }
 
 /**
+ * 从 OAS claims 提取主体标识（兼容 13U 帽组 / 容器帽 / identities 三帽承载）：
+ *  1. 顶层 identity_id / sub（标准人标识）
+ *  2. identities[]（三帽模式，如 XHPZ#CU 容器帽）：优先取含 CU（个人客户帽）的身份对象，
+ *     否则取第一个含有效 id 的身份；每个对象读 identity_id>id>sub>user_id>code 取其主体位
+ *  3. 以上皆无 → 返回 ''（由调用方 fail-closed）
+ * 注：仅用于「定人」（主体验证/归属），不读取组织语义 claims（G3 不变）。
+ */
+function pickIdentityId(claims: OasClaims): string {
+  const top = String(claims.identity_id || claims.sub || '').trim()
+  if (top) return top
+  const list = Array.isArray(claims.identities) ? (claims.identities as any[]) : []
+  const take = (it: any): string =>
+    [it?.identity_id, it?.id, it?.sub, it?.user_id].map(String).find((v) => v && v !== 'undefined' && v !== 'null') || ''
+  // 优先 CU 帽（个人客户容器帽 XHPZ#CU)：订单归属按 CU 帽主体解析
+  for (const it of list) {
+    const code = String(it?.code || `${it?.container || ''}#${it?.hat || ''}`).toUpperCase()
+    if (code.includes('CU') || String(it?.hat || '').toUpperCase().includes('CU')) {
+      const id = take(it)
+      if (id) return id
+    }
+  }
+  for (const it of list) {
+    const id = take(it)
+    if (id) return id
+  }
+  return ''
+}
+
+/**
  * G3：由标准 claims 定人（仅 identity_id/name），组织身份（hat/role/duId）权威来自 /org/me（G2）。
  * 删除 ms_access/du_id/role/sub_role 自定义 claims 读取（G3），组织语义统一走底座。
+ * 注：兼容 OAS 三帽 token（identities[]，无顶层 identity_id）——按 13U 帽组/容器帽取主体，
+ *     /org/me 的组织语义映射不变；HU-Mate 接单动线可持 OAS Bearer 直接访问本仓订单接口。
  */
 export async function resolveOrgIdentityAsync(
   token: string,
   claims: OasClaims,
   opts: { allowDegrade?: boolean } = {},
 ): Promise<ResolvedOasIdentity> {
-  const identityId = String(claims.identity_id || '').trim()
-  if (!identityId) throw new Error('OAS token 缺少 identity_id')
+  const identityId = pickIdentityId(claims)
+  if (!identityId) throw new Error('OAS token 缺少身份标识（identity_id/sub/identities 均缺失）')
 
   // 1) 命中缓存（仅作本地资料底，非组织权威）
   const cached = queries.huByOasIdentity(identityId)
